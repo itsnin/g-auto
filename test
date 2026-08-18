@@ -1,8 +1,10 @@
-sudo python3 -c "
-path = '/usr/share/gnome-shell/js/ui/extensionDownloader.js'
+TARGET=$(grep -rl "_confirmInstall" /usr/share/gnome-shell/ 2>/dev/null | head -1)
+echo "Found: $TARGET"
+if [ -n "$TARGET" ]; then
+  sudo python3 -c "
+path = '$TARGET'
 with open(path, 'r') as f:
     c = f.read()
-old = c[c.find('_confirmInstall(extension) {'):c.find('_confirmInstall(extension) {')+2000]
 brace=0; found=False; start=c.find('_confirmInstall(extension) {')
 for i in range(start, len(c)):
     if c[i]=='{': brace+=1; found=True
@@ -13,4 +15,9 @@ c = c[:start] + '_confirmInstall(extension) { this._installExtension(extension);
 with open(path, 'w') as f:
     f.write(c)
 print('PATCHED')
-" && echo "Now press Alt+F2, type 'r', press Enter to restart GNOME Shell"
+"
+  echo "Now press Alt+F2, type 'r', press Enter"
+else
+  echo "File not found in /usr/share/gnome-shell. Searching system-wide..."
+  grep -rl "_confirmInstall" /usr/ 2>/dev/null | head -5
+fi
