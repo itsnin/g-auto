@@ -1,15 +1,12 @@
-# Load the uinput kernel module
-sudo modprobe uinput
+# Check you're in the input group
+groups | grep input
 
-# Make it load automatically on boot
-echo 'uinput' | sudo tee /etc/modules-load.d/uinput.conf
+# Check /dev/uinput exists and is accessible
+ls -la /dev/uinput
 
-# Add your user to the 'input' group
-sudo usermod -aG input "$USER"
+# Start the ydotool daemon
+ydotoold &
 
-# Create udev rule for permanent access to /dev/uinput
-echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' | sudo tee /etc/udev/rules.d/80-uinput.rules
-
-# Reload udev rules
-sudo udevadm control --reload-rules
-sudo udevadm trigger
+# Quick test: ydotool should be able to send keys
+# This will press Enter after 3 seconds - make sure your cursor is in a text field to see it
+sleep 3 && ydotool key 28:1 28:0
