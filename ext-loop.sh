@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-# GNOME Extension Install/Uninstall Loop - INFINITE
-# Multi-tool fallback: gdbus Eval → xte → xdotool → ydotool
+# GNOME Extension Install/Uninstall Loop - INFINITE - FIXED
+# Fix: Tab+Space first (moves past Cancel to Install), fixed GNOME 46 JS
 # =============================================================================
 
 EXTENSION="spotlight@nin"
@@ -15,23 +15,15 @@ echo "=============================================="
 echo " GNOME Extension Install/Uninstall Loop"
 echo " Extension: $EXTENSION"
 echo " Mode:      INFINITE (Ctrl+C to stop)"
+echo " Fix:       Tab+Space first, JS button filter"
 echo "=============================================="
 echo ""
 
 # -------------------------- VERIFY --------------------------
 echo "[VERIFY] Checking tools..."
-
 command -v gext &>/dev/null && echo "  [OK] gext" || { echo "  [FAIL] gext missing"; exit 1; }
-
-# Install xautomation (xte) if missing
-if ! command -v xte &>/dev/null; then
-    echo "  [INFO] Installing xautomation (xte)..."
-    sudo apt install -y xautomation 2>/dev/null
-fi
 command -v xte &>/dev/null && echo "  [OK] xte" || echo "  [WARN] xte missing"
-
 command -v xdotool &>/dev/null && echo "  [OK] xdotool" || echo "  [WARN] xdotool missing"
-command -v ydotool &>/dev/null && echo "  [OK] ydotool" || echo "  [WARN] ydotool missing"
 
 echo ""
 echo "[INFO] VM window MUST have focus. Do NOT touch keyboard/mouse."
@@ -39,80 +31,112 @@ echo "       Starting in 3 seconds..."
 sleep 3
 echo ""
 
-# -------------------------- KEY SENDING STRATEGIES --------------------------
-
-# Strategy 1: MOST RELIABLE - Run JS inside GNOME Shell via D-Bus
-# This doesn't inject keys - it tells GNOME Shell to click its own button
+# -------------------------- STRATEGY 1: GNOME SHELL JS (BEST) --------------------------
+# Runs JavaScript INSIDE GNOME Shell via D-Bus to click Install button directly
 send_enter_gdbus() {
-    gdbus call --session \
+    local result
+    result=$(gdbus call --session \
         --dest org.gnome.Shell \
         --object-path /org/gnome/Shell \
         --method org.gnome.Shell.Eval '
-            const Main = imports.ui.main;
-            let group = Main.layoutManager.modalDialogGroup;
-            let children = group.get_children();
-            for (let c of children) {
-                let d = c._dialog || c;
-                if (d._buttons) {
-                    for (let b of d._buttons) {
-                        if (b.label && b.label.get_text && b.label.get_text() === "Install") {
-                            b.activate();
-                            return "clicked-install";
+            // GNOME 46 ES module compatible
+            const Main = globalThis.Main || imports.ui.main;
+            let clicked = "no-dialog";
+            
+            try {
+                let group = Main.layoutManager.modalDialogGroup;
+                let children = group.get_children();
+                
+                for (let c of children) {
+                    let dialog = c._dialog || c;
+                    
+                    // Find buttons array
+                    let buttons = dialog._buttons || dialog._buttonList || [];
+                    
+                    for (let btn of buttons) {
+                        let label = "";
+                        
+                        // Try multiple ways to get button label
+                        try {
+                            if (btn.label) {
+                                if (typeof btn.label.get_text === "function") {
+                                    label = btn.label.get_text();
+                                } else if (btn.label.text) {
+                                    label = btn.label.text;
+                                }
+                            } else if (btn.get_label) {
+                                label = btn.get_label();
+                            } else if (btn._label) {
+                                label = btn._label.text || btn._label.get_text();
+                            }
+                        } catch(e) {}
+                        
+                        // DEBUG: log what we find
+                        if (label) {
+                            clicked = "found-btn:" + label;
+                        }
+                        
+                        // MUST be Install, NOT Cancel
+                        if (label === "Install" || label === "_Install" || 
+                            (label.includes("nstall") && !label.includes("ancel"))) {
+                            if (btn.activate) {
+                                btn.activate();
+                                return "CLICKED-INSTALL:" + label;
+                            } else if (btn.click) {
+                                btn.click();
+                                return "CLICKED-INSTALL:" + label;
+                            }
                         }
                     }
                 }
+            } catch(e) {
+                return "JS-ERROR:" + e.message;
             }
-            "no-dialog-found";
-        ' 2>/dev/null | grep -q "clicked-install"
-}
-
-# Strategy 2: xte from xautomation package (uses XTest)
-send_enter_xte() {
-    echo "key Return" | xte 2>/dev/null
-}
-
-# Strategy 3: xdotool
-send_enter_xdotool() {
-    xdotool key Return 2>/dev/null
-    # Also try: get active window and send to it
-    xdotool getactivewindow key Return 2>/dev/null
-}
-
-# Strategy 4: ydotool - try with proper root daemon setup
-send_enter_ydotool() {
-    ydotool key 28:1 28:0 2>/dev/null
-    ydotool key 28 2>/dev/null
-    ydotool type $'\n' 2>/dev/null
-}
-
-# Master send function - tries ALL strategies
-send_enter_all() {
-    echo "          Trying gdbus Eval..."
-    if send_enter_gdbus; then return 0; fi
+            
+            return "RESULT:" + clicked;
+        ' 2>/dev/null)
     
-    sleep 0.2
-    echo "          Trying xte..."
-    send_enter_xte
+    echo "          gdbus result: $result"
     
-    sleep 0.2
-    echo "          Trying xdotool..."
-    send_enter_xdotool
-    
-    sleep 0.2
-    echo "          Trying ydotool..."
-    send_enter_ydotool
-    
-    return 1
+    # Check if we successfully clicked Install
+    echo "$result" | grep -q "CLICKED-INSTALL"
 }
 
-send_tab_space_all() {
-    # Tab then Space via multiple tools
+# -------------------------- STRATEGY 2: TAB + SPACE (KEYBOARD) --------------------------
+# Cancel has initial focus. Tab moves to Install. Space clicks it.
+send_tab_space() {
+    # Method A: xte
     echo "key Tab" | xte 2>/dev/null
-    sleep 0.1
+    sleep 0.15
     echo "key space" | xte 2>/dev/null
     
+    sleep 0.1
+    
+    # Method B: xdotool
     xdotool key Tab space 2>/dev/null
-    ydotool key 15:1 15:0 57:1 57:0 2>/dev/null
+}
+
+# -------------------------- STRATEGY 3: RETURN KEY --------------------------
+# In case Return activates default button (Install)
+send_return() {
+    echo "key Return" | xte 2>/dev/null
+    xdotool key Return 2>/dev/null
+    ydotool key 28:1 28:0 2>/dev/null
+}
+
+# -------------------------- MASTER SEND --------------------------
+send_keys_to_install() {
+    echo "          [1/3] gdbus JS click..."
+    if send_enter_gdbus; then
+        echo "          >>> SUCCESS via gdbus <<<"
+        return 0
+    fi
+    
+    sleep 0.3
+    echo "          [2/3] Tab + Space..."
+    send_tab_space
+    sleep 0.8
+    return 0  # Optimistic - check if process exited in caller
 }
 
 # -------------------------- AUTO CONFIRM --------------------------
@@ -126,40 +150,40 @@ auto_confirm_popup() {
     while (( $(echo "$elapsed < $POPUP_WAIT_TIMEOUT" | bc -l) )); do
         if kill -0 "$gext_pid" 2>/dev/null; then
             
-            sleep 0.3  # Ensure popup has focus
+            sleep 0.4  # Ensure popup fully rendered and has focus
             
             echo "        [AUTO-CONFIRM] Attempt at ${elapsed}s..."
-            send_enter_all
+            send_keys_to_install
+            
+            # Check if gext exited (dialog was handled)
+            sleep 1
+            if ! kill -0 "$gext_pid" 2>/dev/null; then
+                confirmed=1
+                echo "        [AUTO-CONFIRM] Dialog dismissed"
+                break
+            fi
+            
+            # Fallback: try Return
+            echo "        [AUTO-CONFIRM] Fallback: Return key..."
+            send_return
             sleep 0.8
             
             if ! kill -0 "$gext_pid" 2>/dev/null; then
                 confirmed=1
-                echo "        [AUTO-CONFIRM] SUCCESS"
+                echo "        [AUTO-CONFIRM] Dialog dismissed (Return)"
                 break
             fi
             
-            echo "        [AUTO-CONFIRM] Trying Tab+Space..."
-            send_tab_space_all
+            # Desperate: Tab x2 + Space
+            echo "        [AUTO-CONFIRM] Desperate: Tab x2 + Space..."
+            echo "key Tab" | xte 2>/dev/null; sleep 0.1
+            echo "key Tab" | xte 2>/dev/null; sleep 0.1
+            echo "key space" | xte 2>/dev/null
             sleep 0.8
             
             if ! kill -0 "$gext_pid" 2>/dev/null; then
                 confirmed=1
-                echo "        [AUTO-CONFIRM] SUCCESS with Tab+Space"
-                break
-            fi
-            
-            # Rapid fire
-            echo "        [AUTO-CONFIRM] Rapid fire x5..."
-            for i in 1 2 3 4 5; do
-                echo "key Return" | xte 2>/dev/null
-                xdotool key Return 2>/dev/null
-                sleep 0.08
-            done
-            sleep 0.5
-            
-            if ! kill -0 "$gext_pid" 2>/dev/null; then
-                confirmed=1
-                echo "        [AUTO-CONFIRM] SUCCESS with rapid fire"
+                echo "        [AUTO-CONFIRM] Dialog dismissed (Tabx2)"
                 break
             fi
             
@@ -190,7 +214,8 @@ install_extension() {
     fi
     
     wait "$gext_pid" 2>/dev/null
-    echo "    [INSTALL] Done (exit: $?)"
+    local rc=$?
+    echo "    [INSTALL] gext exit code: $rc"
     sleep $DELAY_AFTER_INSTALL
     
     echo "    [ENABLE] $EXTENSION"
@@ -198,7 +223,11 @@ install_extension() {
     sleep $DELAY_AFTER_ENABLE
     
     echo "    [VERIFY]"
-    gnome-extensions info "$EXTENSION" 2>/dev/null | head -2 || echo "      Not detected"
+    if gnome-extensions info "$EXTENSION" 2>/dev/null; then
+        echo "    [VERIFY] >>> EXTENSION IS INSTALLED <<<"
+    else
+        echo "    [VERIFY] >>> WARNING: NOT INSTALLED - clicked Cancel? <<<"
+    fi
 }
 
 # -------------------------- UNINSTALL --------------------------
@@ -208,8 +237,11 @@ uninstall_extension() {
     rm -rf "$HOME/.local/share/gnome-shell/extensions/$EXTENSION" 2>/dev/null
     sleep $DELAY_AFTER_UNINSTALL
     
-    [ ! -d "$HOME/.local/share/gnome-shell/extensions/$EXTENSION" ] && \
-        echo "    [VERIFY] Files removed" || echo "    [VERIFY] WARNING: Files present"
+    if [ ! -d "$HOME/.local/share/gnome-shell/extensions/$EXTENSION" ]; then
+        echo "    [VERIFY] Files removed"
+    else
+        echo "    [VERIFY] WARNING: Files still present!"
+    fi
 }
 
 # -------------------------- INFINITE LOOP --------------------------
